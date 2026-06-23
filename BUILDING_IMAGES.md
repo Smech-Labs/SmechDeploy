@@ -423,6 +423,97 @@ limitation, not a SmechOS image bug — the three fixes in 8a are sufficient for
 systemd, D-Bus, and the user session/Plasma launch to work correctly; full
 graphical verification requires real hardware or a host with working virgl.
 
+## 9. The minimal netinst installer (`smechos-installer-minimal-netinst.iso`)
+
+A from-scratch, hand-rolled installer environment (no dracut, no Calamares) that
+boots a 3MB Rust binary (`repo-packs-installer/`) driving a `libnewt`-based TUI
+wizard. The wizard partitions a disk, fetches packages over HTTPS from
+`Smech-Labs/spk-repo-gun` (no embedded payload), and installs GRUB. Total ISO
+size: ~78MB.
+
+### 9a. Build pipeline
+
+```
+repo-packs-installer/  --(cargo build --release)-->  usr/bin/smech-installer (3MB, static rustls/webpki-roots, dynamic libnewt/libslang/libc)
+                                          |
+/tmp/netinst_installer_root/  (hand-assembled rootfs: bash, sfdisk, mkfs.*, dhcpcd, ip, tar, blkid,
+                                grub-install — fetched from target chroot, NOT bundled here —
+                                broad WiFi/NIC kernel modules, terminfo "linux" entry for cfdisk)
+                                          |
+                              (kernel/usr/gen_initramfs.sh -u squash -g squash)
+                                          |
+                                          v
+                              initramfs-handrolled.img (~34MB gzip cpio)
+                                          |
+                              (xorriso -as mkisofs, El Torito BIOS via GRUB i386-pc + UEFI via efiboot.img)
+                                          v
+                              images/smechos-installer-minimal-netinst.iso
+```
+
+`/init` is plain bash: mounts `/proc /sys /dev`, loads the broad driver list via
+**parallel** `modprobe` calls (each wrapped in `timeout 5`, then a single `wait`),
+then execs `smech-installer` directly. No udev, no dracut.
+
+### 9b. Real bugs found and fixed in this installer (in case any regress)
+
+1. **`/dev/console` aliasing.** With multiple `console=` kernel params, the
+   **last** one listed becomes `/dev/console`. Get this backwards and any plain
+   `echo`/program output from `/init` or the installer is invisible on whichever
+   console you're actually watching, even though the kernel's own `printk`
+   messages (which broadcast to *all* registered consoles) still show up — this
+   looks exactly like a hang. Use `console=tty0 console=ttyS0,115200n8` if you
+   want local-display output, or swap the order for serial-only capture.
+
+2. **`dhcpcd` (and any blocking call) must never run before the installer UI
+   launches.** Bring up networking only when actually needed (right before a
+   package fetch), and even then keep it non-blocking/timeout-wrapped. A single
+   blocking network call in `/init` can hang the entire boot indefinitely if no
+   DHCP server responds quickly.
+
+3. **Sequential `modprobe` of an unmatched-hardware driver list is slow.**
+   Each `modprobe` for a driver with no matching device can still take real
+   wall-clock time (symbol resolution, probe attempts). Looping through a dozen
+   drivers *sequentially* can add tens of seconds. Background each one with its
+   own `timeout`, then a single `wait` — total time becomes the slowest one, not
+   the sum.
+
+4. **`modprobe hv_utils` can hang the kernel-side module init itself** on some
+   Hyper-V configurations (a kernel-space wait, not killable by `timeout`ing the
+   *userspace* `modprobe` process unless it's also backgrounded). Background it
+   like every other driver; don't depend on it for installer-critical paths
+   (it's just VM integration: graceful shutdown, heartbeat, time sync).
+
+5. **`cfdisk`/anything ncurses-based needs a real terminfo entry bundled** —
+   `/usr/share/terminfo/l/linux` at minimum. Without it: `Error opening
+   terminal: linux.` and the program exits immediately (looks like nothing
+   happened, easy to misdiagnose as a hang elsewhere).
+
+6. **GRUB's `timeout=0` means "boot immediately, no menu."** Syslinux/isolinux's
+   `TIMEOUT 0` means the *opposite* — "wait forever, never auto-boot." Don't
+   carry GRUB intuition into an isolinux config; use a small positive value
+   (e.g. `TIMEOUT 1`, in tenths of a second) for syslinux-family bootloaders.
+
+7. **Remounting the exact same optical device the kernel just booted from
+   (e.g. re-mounting `/dev/sr0` from `/init` to access extra files on the boot
+   media) can deadlock QEMU's IDE/ATAPI CD-ROM emulation** even when wrapped in
+   `timeout` (the mount call itself returns, but something downstream blocks).
+   This is why the shipped `/init` does **not** attempt a secondary mount of the
+   boot media — the "broad firmware kept off the initramfs, loaded on-demand
+   from the ISO" design is sound in principle (kernel's `firmware_class` module
+   parameter `path` supports an extra search directory, and `udevadm`/
+   `systemd-udevd` already exist as a symlinked multi-call binary in the build
+   root for proper MODALIAS-driven coldplug) but isn't safely implemented yet —
+   revisit if WiFi-during-install becomes a hard requirement.
+
+8. **Boot-loading a large initramfs from virtual/real optical media (BIOS or
+   UEFI, GRUB or isolinux — doesn't matter) is inherently much slower than
+   block-device access.** Measured in this project: ~19s to load a 34MB
+   initramfs via QEMU's emulated CD-ROM (both BIOS *and* UEFI paths, both GRUB
+   *and* isolinux — confirmed not bootloader-specific), versus ~5.4s for the
+   *identical* data attached as a `virtio` block device. This ISO is isohybrid
+   (bootable as a `dd`'d USB stick); prefer that over virtual-DVD-drive
+   attachment in any hypervisor that supports it.
+
 ## Summary: full pipeline at a glance
 
 ```
