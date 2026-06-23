@@ -1,0 +1,22 @@
+# --- SmechOS Complete Build Sequence ---
+
+# Phase 1: Base System Restoration (directly on part2.img via debugfs)
+bin/restore_utils.py
+bin/restore_lib64.py
+bin/restore_etc.py
+bin/deploy_openrc.py
+bin/edit_inittab.py
+bin/write_unreadable_etc.py
+
+# Phase 2: System Compilation & Configuration (on mounted target /mnt/smechos)
+bin/01_compile_core_system.sh
+bin/02_compile_grub_efi.sh
+bin/03_compile_qt_deps.sh
+bin/compile_mesa_stack.sh
+bin/04_compile_kde_stack.py
+bin/05_configure_plasma.sh
+bin/06_copy_kwin_deps.py
+bin/07_copy_qt6uitools.py
+bin/compile_kernel.sh
+bin/08_patch_metadata.py
+bin/09_rotate_auth.py
