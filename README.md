@@ -112,15 +112,29 @@ subset is later packaged into the 5 GB image.
 combined GPT image like `smechos-redo.img` with a 1 GB EFI partition + 5 GB Linux
 root partition — must exist before running anything.
 
-### 2. Phase 1 — base system restoration
+### 2. Phase 1 — independent userland bootstrap
 
-Operates directly on `images/part2.img` via `debugfs -w` (no mount needed). Pulls
-files from the reference host at `/mnt/kaymium_sovereign`:
+Compiles musl libc and the GNU userland (coreutils, grep, sed, tar, etc.) from
+source against musl+Clang directly into the mounted target at `/mnt/smechos`,
+followed by a hand-authored `/etc` skeleton. See `bin/MUSL_BOOTSTRAP_PLAN.md`
+for the full design. This replaced the old `restore_utils.py`/
+`restore_lib64.py`/`restore_etc.py`, which copied a host's existing
+glibc/GNU userland out of `/mnt/kaymium_sovereign` — SmechOS no longer depends
+on that reference host filesystem at all.
 
 ```sh
-python3 bin/restore_utils.py
-python3 bin/restore_lib64.py
-python3 bin/restore_etc.py
+sudo bash bin/10_bootstrap_musl.sh
+sudo bash bin/11_bootstrap_userland_musl.sh
+python3 bin/12_write_etc_skeleton.py
+```
+
+### 2b. Phase 1b — base image-level fixups
+
+Operates directly on `images/part2.img` via `debugfs -w` (target unmounted).
+These already source from local/vendored files or the image's own existing
+content, not `/mnt/kaymium_sovereign`:
+
+```sh
 python3 bin/deploy_openrc.py
 python3 bin/edit_inittab.py
 python3 bin/write_unreadable_etc.py

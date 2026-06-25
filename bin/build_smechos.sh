@@ -40,16 +40,19 @@ while read -r script; do
         exit 1
     fi
     
-    # If the script is a Phase 1 script, ensure TARGET_MOUNT is UNMOUNTED
-    if [[ "$script" == *restore* ]] || [[ "$script" == *deploy_openrc* ]] || [[ "$script" == *edit_inittab* ]] || [[ "$script" == *write_unreadable* ]]; then
+    # Phase 1b scripts operate directly on part2.img via debugfs and need
+    # TARGET_MOUNT UNMOUNTED.
+    if [[ "$script" == *deploy_openrc* ]] || [[ "$script" == *edit_inittab* ]] || [[ "$script" == *write_unreadable* ]]; then
         if mountpoint -q "$TARGET_MOUNT"; then
             echo "[*] Unmounting $TARGET_MOUNT for safe debugfs execution..."
             sudo umount -R "$TARGET_MOUNT" || true
         fi
     fi
-    
-    # If the script is a Phase 2 script (runs on mounted system), ensure TARGET_MOUNT is MOUNTED
-    if [[ "$script" == *compile* ]] || [[ "$script" == *configure* ]] || [[ "$script" == *copy* ]] || [[ "$script" == *patch* ]]; then
+
+    # Phase 1 (musl/userland/etc-skeleton bootstrap) and Phase 2 (compile/
+    # configure/copy/patch) scripts all install directly into the mounted
+    # target via DESTDIR or plain file writes, so TARGET_MOUNT must be MOUNTED.
+    if [[ "$script" == *bootstrap* ]] || [[ "$script" == *write_etc_skeleton* ]] || [[ "$script" == *compile* ]] || [[ "$script" == *configure* ]] || [[ "$script" == *copy* ]] || [[ "$script" == *patch* ]]; then
         if ! mountpoint -q "$TARGET_MOUNT"; then
             echo "[*] SmechOS target is not mounted. Attempting to mount..."
             if [ -b "/dev/nbd1p2" ]; then
