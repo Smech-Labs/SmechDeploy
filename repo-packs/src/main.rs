@@ -12,6 +12,35 @@ const YELLOW: &str = "\x1b[33m";
 const RED: &str = "\x1b[31m";
 const MAGENTA: &str = "\x1b[35m";
 
+// Packages are served from a GitHub Release rather than GerritHub's REST
+// file-content API. That API works for small files but silently truncates
+// large binaries (confirmed: base-system.tar.xz fetches incomplete through
+// it while smaller packages don't) -- GitHub Releases serves raw files
+// directly with no such limit.
+const RELEASE_BASE_URL: &str = "https://github.com/Smech-Labs/SmechDeploy/releases/download/v1.0.0-packages";
+
+// Packages currently published in the release above. Used by
+// entire-system-upgrade to know what to re-fetch; system-install/
+// userland-install can fetch any package name, known or not, and let the
+// HTTP request itself fail if it doesn't exist.
+//
+// NOTE: base-system is deliberately not listed here. It's corrupted in the
+// spk-repo-gun git history itself (its xz stream ends prematurely -- this
+// is independent of the GerritHub API truncation bug) and needs to be
+// rebuilt from source before it can be republished. `spk system-install
+// base-system` will still attempt the fetch and fail clearly rather than
+// pretend the package doesn't exist.
+const KNOWN_PACKAGES: &[&str] = &[
+    "kernel-modules",
+    "firmware",
+    "bootloader-grub",
+    "kde-frameworks",
+    "plasma",
+    "qt6",
+    "mesa-graphics",
+    "calamares-installer",
+];
+
 fn print_banner() {
     println!(
         "{}{}{}========================================================================{}",
@@ -54,23 +83,23 @@ fn print_help() {
     println!();
     println!("{}COMMANDS:{}", BOLD, RESET);
     println!(
-        "    {}system-install <pkg>{}   Install packages onto the target system partition",
+        "    {}system-install <pkg>{}   Fetch and install a package onto the target system partition",
         GREEN, RESET
     );
     println!(
-        "    {}userland-install <pkg>{} Install userland software (Flatpaks/Apps)",
+        "    {}userland-install <pkg>{} Fetch and install a userland package",
         GREEN, RESET
     );
     println!(
-        "    {}entire-system-upgrade{}  Synchronize and compile complete updates for SmechOS",
+        "    {}entire-system-upgrade{}  Re-fetch and reinstall every known SmechOS package",
         GREEN, RESET
     );
     println!("    {}about{}                  Show SmechOS workstation specs and software credits", GREEN, RESET);
     println!("    {}help{}                   Show this help menu", GREEN, RESET);
     println!();
     println!("{}EXAMPLES:{}", BOLD, RESET);
-    println!("    spk system-install htop");
-    println!("    spk userland-install org.mozilla.firefox");
+    println!("    spk system-install base-system");
+    println!("    spk userland-install plasma");
     println!("    spk entire-system-upgrade");
     println!();
 }
@@ -89,7 +118,8 @@ fn print_about() {
     println!("{}--- SPK ARCHITECTURE CREDITS ---{}", BOLD, RESET);
     println!("  Designed by Gemini / Antigravity with Comrade Smech.");
     println!("  Built as a zero-dependency, static sovereign manager.");
-    println!("  Replacing black-box lane-rationing with pure compute sovereignty.");
+    println!("  Fetches real packages from Smech-Labs/SmechDeploy releases -- no Gentoo/Portage,");
+    println!("  no Flatpak, nothing borrowed from another distro's package format.");
     println!();
 }
 
@@ -116,61 +146,55 @@ fn is_root() -> bool {
     }
 }
 
-fn run_command_interactive(cmd: &str, args: &[&str]) -> bool {
-    let mut child = Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn();
+/// Fetches a package's .tar.xz from the SmechDeploy GitHub Release and
+/// extracts it into target_root. Shells out to curl/tar (system tools)
+/// rather than pulling in an HTTP/TLS crate, keeping spk a zero-crate-
+/// dependency binary -- consistent with how it already shells out to
+/// chroot/sudo rather than linking against their internals.
+fn fetch_and_install_package(pkg: &str, target_root: &str) -> bool {
+    let url = format!("{}/{}.tar.xz", RELEASE_BASE_URL, pkg);
 
-    match child {
-        Ok(mut proc) => {
-            if let Ok(status) = proc.wait() {
-                status.success()
-            } else {
-                false
-            }
-        }
-        Err(e) => {
-            println!("{}[-] Failed to execute command {}: {}{}", BOLD, cmd, e, RESET);
-            false
+    println!("{}[+] Fetching {}...{}", CYAN, pkg, RESET);
+
+    let tmp_tar = format!("/tmp/spk-{}.tar.xz", pkg);
+
+    let curl_status = Command::new("curl")
+        .args(["-sfL", "-o", &tmp_tar, &url])
+        .status();
+    match curl_status {
+        Ok(status) if status.success() => {}
+        _ => {
+            println!(
+                "{}[-] Failed to download {} -- package may not exist, or the network is unreachable.{}",
+                RED, pkg, RESET
+            );
+            let _ = fs::remove_file(&tmp_tar);
+            return false;
         }
     }
-}
 
-fn chroot_run(target_dir: &str, inner_cmd: &[&str]) -> bool {
-    // We execute chroot with target_dir
-    let mut args = vec![target_dir];
-    args.extend(inner_cmd);
-    
-    // We run sudo chroot if we are not root, or just chroot if we are root
-    let (cmd, final_args) = if is_root() {
-        ("chroot", args)
+    if let Err(e) = fs::create_dir_all(target_root) {
+        println!("{}[-] Failed to create target root {}: {}{}", RED, target_root, e, RESET);
+        let _ = fs::remove_file(&tmp_tar);
+        return false;
+    }
+
+    println!("{}[+] Extracting {} into {}...{}", CYAN, pkg, target_root, RESET);
+    let extract_cmd = format!("tar -xf '{}' -C '{}'", tmp_tar, target_root);
+    let extract_status = if is_root() {
+        Command::new("sh").arg("-c").arg(&extract_cmd).status()
     } else {
-        let mut sudo_args = vec!["-S", "chroot"];
-        sudo_args.extend(args);
-        ("sudo", sudo_args)
+        Command::new("sudo")
+            .args(["-S", "sh", "-c", &extract_cmd])
+            .stdin(Stdio::inherit())
+            .status()
     };
+    let _ = fs::remove_file(&tmp_tar);
 
-    let mut proc_cmd = Command::new(cmd);
-    proc_cmd.args(&final_args)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-
-    // If running under sudo, we might try feeding password or running directly
-    let mut child = proc_cmd.spawn();
-    match child {
-        Ok(mut proc) => {
-            if let Ok(status) = proc.wait() {
-                status.success()
-            } else {
-                false
-            }
-        }
-        Err(e) => {
-            println!("{}[-] Failed to run chroot command: {}{}", BOLD, e, RESET);
+    match extract_status {
+        Ok(status) if status.success() => true,
+        _ => {
+            println!("{}[-] Failed to extract {} into {}.{}", RED, pkg, target_root, RESET);
             false
         }
     }
@@ -192,57 +216,25 @@ fn main() {
         "about" | "--about" => {
             print_about();
         }
-        "system-install" => {
+        "system-install" | "userland-install" => {
             if args.len() < 3 {
                 println!("{}[-] Error: Please specify a package to install.{}", BOLD, RESET);
-                println!("    Example: spk system-install htop");
+                println!("    Example: spk {} base-system", command);
                 exit(1);
             }
             let pkg = &args[2];
+            let label = if command == "system-install" { "SYSTEM" } else { "USERLAND" };
             println!("{}====================================================", BOLD);
-            println!("  SPK: INSTALLING SYSTEM PARTITION PACKAGE: {}", pkg);
+            println!("  SPK: INSTALLING {} PACKAGE: {}", label, pkg);
             println!("===================================================={}", RESET);
 
             let (is_host, target_dir) = get_target_context();
-            let success = if is_host {
-                println!("{}[+] Running emerge inside SmechOS chroot (at {})...{}", CYAN, target_dir, RESET);
-                chroot_run(target_dir, &["emerge", "-av", pkg])
-            } else {
-                println!("{}[+] Running emerge directly in local environment...{}", CYAN, RESET);
-                run_command_interactive("emerge", &["-av", pkg])
-            };
+            let target_root = if is_host { target_dir } else { "/" };
 
-            if success {
-                println!("{} [+] Package {} installed successfully on system partition!{}", BOLD, pkg, RESET);
+            if fetch_and_install_package(pkg, target_root) {
+                println!("{} [+] Package {} installed successfully!{}", BOLD, pkg, RESET);
             } else {
                 println!("{} [-] Installation failed for package {}.{}", BOLD, pkg, RESET);
-                exit(1);
-            }
-        }
-        "userland-install" => {
-            if args.len() < 3 {
-                println!("{}[-] Error: Please specify a flatpak package to install.{}", BOLD, RESET);
-                println!("    Example: spk userland-install org.mozilla.firefox");
-                exit(1);
-            }
-            let pkg = &args[2];
-            println!("{}====================================================", BOLD);
-            println!("  SPK: INSTALLING USERLAND PACKAGE (FLATPAK): {}", pkg);
-            println!("===================================================={}", RESET);
-
-            let (is_host, target_dir) = get_target_context();
-            let success = if is_host {
-                println!("{}[+] Running flatpak inside SmechOS chroot (at {})...{}", CYAN, target_dir, RESET);
-                chroot_run(target_dir, &["flatpak", "install", "-y", pkg])
-            } else {
-                println!("{}[+] Running flatpak directly in local environment...{}", CYAN, RESET);
-                run_command_interactive("flatpak", &["install", "-y", pkg])
-            };
-
-            if success {
-                println!("{} [+] Userland package {} installed successfully!{}", BOLD, pkg, RESET);
-            } else {
-                println!("{} [-] Installation failed for userland package {}.{}", BOLD, pkg, RESET);
                 exit(1);
             }
         }
@@ -250,15 +242,9 @@ fn main() {
             println!("{}{}{}========================================================================{}", BOLD, MAGENTA, RESET, RESET);
             println!("{}{}        SMECHOS SOVEREIGN PACKAGE KEEPER (SPK) - FULL UPGRADE HUD{}", BOLD, CYAN, RESET);
             println!("{}{}{}========================================================================{}", BOLD, MAGENTA, RESET, RESET);
-            println!("  {}* SYSTEM HARDWARE DIAGNOSTICS *{}", BOLD, RESET);
-            println!("    - CPU: AMD Threadripper PRO 9965WX (Zen 5, 24 Cores)");
-            println!("    - Motherboard: ASUS Pro WS WRX90E-SAGE SE (WRX90 FLAGSHIP)");
-            println!("    - RAM: 256GB DDR5 RDIMM ECC-Registered Matching Array");
-            println!("    - Storage: Dual 1TB Samsung 990 PRO NVMe (SmechOS System Partition)");
-            println!("    - Liquid Loop: Syltherm 800 Quad-Pump (Active, Dual Radiators)");
-            println!("  {}* DETECTING SYSTEM CONTEXT *{}", BOLD, RESET);
-            
+
             let (is_host, target_dir) = get_target_context();
+            let target_root = if is_host { target_dir } else { "/" };
             if is_host {
                 println!("    - Context: Host system (targeting SmechOS rootfs at {})", target_dir);
             } else {
@@ -266,47 +252,31 @@ fn main() {
             }
             println!("{}{}{}========================================================================{}", BOLD, MAGENTA, RESET, RESET);
 
-            println!("\n{}[1/3] STEP 1: SYNCHRONIZING PORTAGE PACKAGE TREE...{}", BOLD, RESET);
-            let sync_success = if is_host {
-                chroot_run(target_dir, &["emerge", "--sync"])
-            } else {
-                run_command_interactive("emerge", &["--sync"])
-            };
-
-            if !sync_success {
-                println!("{}[-] Error: Portage synchronization failed. Aborting upgrade.{}", BOLD, RESET);
-                exit(1);
+            let mut failures = Vec::new();
+            for (i, pkg) in KNOWN_PACKAGES.iter().enumerate() {
+                println!(
+                    "\n{}[{}/{}] Re-fetching {}...{}",
+                    BOLD,
+                    i + 1,
+                    KNOWN_PACKAGES.len(),
+                    pkg,
+                    RESET
+                );
+                if !fetch_and_install_package(pkg, target_root) {
+                    failures.push(*pkg);
+                }
             }
 
-            println!("\n{}[2/3] STEP 2: COMPILES & UPGRADES FOR SYSTEM PARTITION...{}", BOLD, RESET);
-            let system_success = if is_host {
-                chroot_run(target_dir, &["emerge", "-auDN", "@world"])
-            } else {
-                run_command_interactive("emerge", &["-auDN", "@world"])
-            };
-
-            if !system_success {
-                println!("{}[-] Error: System compilation/upgrade failed. Skipping userland.{}", BOLD, RESET);
-                exit(1);
-            }
-
-            println!("\n{}[3/3] STEP 3: UPGRADING USERLAND FLATPAKS...{}", BOLD, RESET);
-            let userland_success = if is_host {
-                chroot_run(target_dir, &["flatpak", "update", "-y"])
-            } else {
-                run_command_interactive("flatpak", &["update", "-y"])
-            };
-
-            if userland_success {
+            if failures.is_empty() {
                 println!("\n{}{}{}========================================================================{}", BOLD, GREEN, RESET, RESET);
                 println!("{}{}          SMECHOS SYSTEM COMPILATION & UPGRADE COMPLETED!{}", BOLD, GREEN, RESET);
                 println!("{}            Sovereignty verified. Your workstation is secure.{}", BOLD, RESET);
                 println!("{}{}{}========================================================================{}", BOLD, GREEN, RESET, RESET);
             } else {
-                println!("{}Warning: Userland flatpak updates encountered issues.{}", YELLOW, RESET);
                 println!("\n{}{}{}========================================================================{}", BOLD, YELLOW, RESET, RESET);
-                println!("{}{}    SMECHOS SYSTEM PARTITION UPGRADED WITH SOME USERLAND WARNINGS{}", BOLD, YELLOW, RESET);
+                println!("{}{}    SMECHOS UPGRADE COMPLETED WITH FAILURES: {:?}{}", BOLD, YELLOW, failures, RESET);
                 println!("{}{}{}========================================================================{}", BOLD, YELLOW, RESET, RESET);
+                exit(1);
             }
         }
         _ => {
