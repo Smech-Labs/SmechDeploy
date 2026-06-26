@@ -477,11 +477,19 @@ then execs `smech-installer` directly. No udev, no dracut.
    own `timeout`, then a single `wait` — total time becomes the slowest one, not
    the sum.
 
-4. **`modprobe hv_utils` can hang the kernel-side module init itself** on some
-   Hyper-V configurations (a kernel-space wait, not killable by `timeout`ing the
-   *userspace* `modprobe` process unless it's also backgrounded). Background it
-   like every other driver; don't depend on it for installer-critical paths
-   (it's just VM integration: graceful shutdown, heartbeat, time sync).
+4. **`modprobe hv_utils`'s kernel-side init can block in `TASK_UNINTERRUPTIBLE`**
+   during the Hyper-V heartbeat-channel handshake — confirmed via a real
+   recording (kernel printk timestamp frozen at ~1.08s while ~28s of real wall
+   clock elapsed, right after `hv_utils: Heartbeat IC version 3.0`). Backgrounding
+   the `modprobe` call and wrapping it in `timeout` does **not** fix this:
+   a process in `TASK_UNINTERRUPTIBLE` cannot receive *any* signal, including
+   the `SIGTERM` `timeout` sends, until the kernel-side wait itself completes —
+   and a plain `wait` (no args) in `/init` then blocks on that same stuck job
+   regardless of backgrounding. The only real fix is to **not load `hv_utils`
+   at all** during install — it's pure VM quality-of-life integration (graceful
+   shutdown signaling, heartbeat, time sync), not needed for a short-lived
+   installer session. Keep `hv_vmbus`/`hv_storvsc`/`hv_netvsc` (needed for
+   actual disk/NIC access on Hyper-V); drop `hv_utils` specifically.
 
 5. **`cfdisk`/anything ncurses-based needs a real terminfo entry bundled** —
    `/usr/share/terminfo/l/linux` at minimum. Without it: `Error opening

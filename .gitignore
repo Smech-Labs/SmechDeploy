@@ -1,3 +1,21 @@
+# build outputs / Rust targets
 /repo-packs/target
 /repo-packs-installer/target
+
+# large vendored source trees and binary images -- not tracked in git
+/images/
+/essentials/
+/deps/
+/iso-builder/
+
+# build logs
+/log/
+/logs_archive/
+
+# kernel artifact dropped in bin/
+/bin/6.12.16
+
+# Python cache and venv
 __pycache__/
+*.pyc
+/.venv/

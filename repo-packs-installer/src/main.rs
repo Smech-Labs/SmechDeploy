@@ -1,14 +1,18 @@
 mod newt;
 
-use base64::Engine;
 use std::fs;
+use std::io::Read;
 use std::process::Command;
 
 use newt::Screen;
 
 const TARGET: &str = "/mnt/target";
-const GERRIT_HOST: &str = "review.gerrithub.io";
-const GERRIT_PROJECT: &str = "Smech-Labs/spk-repo-gun";
+// Packages are served from a GitHub Release rather than GerritHub's REST
+// file-content API -- that API works for small files but silently
+// truncates large binaries (confirmed: base-system.tar.xz fetched
+// incomplete through it). GitHub Releases serves raw files directly with
+// no such limit. See Smech-Labs/spk's README for the full story.
+const RELEASE_BASE_URL: &str = "https://github.com/Smech-Labs/SmechDeploy/releases/download/v1.0.0-packages";
 
 const BASE_PACKAGES: &[&str] = &["base-system", "kernel-modules", "firmware", "bootloader-grub"];
 const KDE_PACKAGES: &[&str] = &["kde-frameworks", "plasma", "qt6", "mesa-graphics"];
@@ -128,29 +132,14 @@ fn ensure_network(timeout: u32) {
 }
 
 fn fetch_package(name: &str) -> Result<Vec<u8>, String> {
-    let path = format!("packages/{}.tar.xz", name);
-    let url = format!(
-        "https://{}/projects/{}/branches/main/files/{}/content",
-        GERRIT_HOST,
-        urlencode(GERRIT_PROJECT),
-        urlencode(&path)
-    );
+    let url = format!("{}/{}.tar.xz", RELEASE_BASE_URL, name);
     let mut resp = ureq::get(&url).call().map_err(|e| e.to_string())?;
-    let body = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
-    base64::engine::general_purpose::STANDARD
-        .decode(body.trim())
-        .map_err(|e| e.to_string())
-}
-
-fn urlencode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
+    let mut buf = Vec::new();
+    resp.body_mut()
+        .as_reader()
+        .read_to_end(&mut buf)
+        .map_err(|e| e.to_string())?;
+    Ok(buf)
 }
 
 fn fetch_and_extract(name: &str, target: &str) -> Result<(), String> {
@@ -359,6 +348,13 @@ impl Wizard {
         if idx < n_eth {
             let iface = eth[idx];
             let _ = run(&["dhcpcd", "-t", "15", iface]);
+            // This minimal environment has no dhcpcd-hooks (no
+            // /usr/lib/dhcpcd/dhcpcd-hooks/01-resolv.conf), so dhcpcd
+            // obtains a lease/IP but never actually writes /etc/resolv.conf
+            // itself -- confirmed by testing in QEMU: DHCP succeeds but
+            // every subsequent package fetch fails with "Temporary failure
+            // in name resolution". Write a working resolver directly.
+            let _ = fs::write("/etc/resolv.conf", "nameserver 8.8.8.8\nnameserver 1.1.1.1\n");
         } else if idx < n_eth * 2 {
             let iface = eth[idx - n_eth];
             let values = newt::entry_window(
@@ -376,6 +372,11 @@ impl Wizard {
                 iface, ip_cidr, gateway, dns
             );
             let _ = append_file(&format!("{}/etc/dhcpcd.conf", TARGET), &conf);
+            // Same as the DHCP branch: the installer's own environment
+            // needs working DNS right now, immediately, to fetch packages
+            // -- not just the persisted config for the installed system's
+            // future boots.
+            let _ = fs::write("/etc/resolv.conf", format!("nameserver {}\n", dns));
         } else {
             newt::message_window(
                 "Wi-Fi Not Yet Supported",
@@ -473,9 +474,9 @@ impl Wizard {
         self.step_country();
         self.step_timezone();
         self.step_hardware_detect();
+        self.step_network();
         self.step_partition();
         self.step_base_install();
-        self.step_network();
         self.step_profile();
         self.step_install_profile_packages();
         self.step_userland();
