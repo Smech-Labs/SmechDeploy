@@ -57,14 +57,19 @@ cp "$INSTALLER_BIN" "$INST_DIR/smechvisor-installer"
 echo "[smechvisor-install-iso] Packing smechvisor-base..."
 if [ -d "$SMECH_TARGET" ]; then
     tar -cJf "$PKGS_DIR/smechvisor-base.tar.xz" \
-        --exclude="$SMECH_TARGET/usr/sbin/smechvisord" \
-        --exclude="$SMECH_TARGET/usr/sbin/cloud-hypervisor" \
-        --exclude="$SMECH_TARGET/usr/sbin/vhost-user-gpu" \
-        --exclude="$SMECH_TARGET/usr/share/smechvisord" \
-        --exclude="$SMECH_TARGET/etc/init.d/smechvisord" \
-        --exclude="$SMECH_TARGET/etc/init.d/vhost-user-gpu" \
-        --exclude="$SMECH_TARGET/etc/runlevels/default/smechvisord" \
-        --exclude="$SMECH_TARGET/etc/runlevels/default/vhost-user-gpu" \
+        --ignore-failed-read \
+        --exclude="./lost+found" \
+        --exclude="./etc/shadow" \
+        --exclude="./etc/shadow-" \
+        --exclude="./etc/.pwd.lock" \
+        --exclude="./usr/sbin/smechvisord" \
+        --exclude="./usr/sbin/cloud-hypervisor" \
+        --exclude="./usr/sbin/vhost-user-gpu" \
+        --exclude="./usr/share/smechvisord" \
+        --exclude="./etc/init.d/smechvisord" \
+        --exclude="./etc/init.d/vhost-user-gpu" \
+        --exclude="./etc/runlevels/default/smechvisord" \
+        --exclude="./etc/runlevels/default/vhost-user-gpu" \
         -C "$SMECH_TARGET" .
 else
     echo "[smechvisor-install-iso] Warning: SMECH_TARGET $SMECH_TARGET not found."
