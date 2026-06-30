@@ -23,9 +23,8 @@ const TIMEZONES: &[&str] = &[
 ];
 
 fn run(cmd: &[&str]) -> Result<String, String> {
-    use std::io::Write;
     use std::process::Stdio;
-    let mut child = Command::new(cmd[0])
+    let child = Command::new(cmd[0])
         .args(&cmd[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

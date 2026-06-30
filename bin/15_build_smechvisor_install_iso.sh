@@ -56,7 +56,7 @@ cp "$INSTALLER_BIN" "$INST_DIR/smechvisor-installer"
 # These come from SMECH_TARGET (built by the smechvisor SmechDeploy profile).
 echo "[smechvisor-install-iso] Packing smechvisor-base..."
 if [ -d "$SMECH_TARGET" ]; then
-    sudo tar -cJf "$PKGS_DIR/smechvisor-base.tar.xz" \
+    tar -cJf "$PKGS_DIR/smechvisor-base.tar.xz" \
         --exclude="$SMECH_TARGET/usr/sbin/smechvisord" \
         --exclude="$SMECH_TARGET/usr/sbin/cloud-hypervisor" \
         --exclude="$SMECH_TARGET/usr/sbin/vhost-user-gpu" \
