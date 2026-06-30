@@ -1,0 +1,30 @@
+# SmechVisor build order
+#
+# Produces a stripped-down SmechOS base running OpenRC only, with the
+# smechvisord hypervisor control plane as the sole userland service.
+# No KDE, no Qt, no Mesa, no Plasma -- bare-metal hypervisor only.
+#
+# Usage:
+#   SMECHOS_PROFILE=smechvisor bash bin/build_smechos.sh
+#   (or directly: MANIFEST=build_order_smechvisor.txt bash bin/build_smechos.sh)
+#
+# Phase 1 -- Independent musl + Clang base (replaces host-copy approach)
+bin/10_bootstrap_musl.sh
+bin/11_bootstrap_userland_musl.sh
+bin/12_write_etc_skeleton.py
+
+# Phase 2 -- OpenRC skeleton and inittab
+bin/deploy_openrc.py
+bin/edit_inittab.py
+
+# Phase 3 -- Kernel (with KVM, VFIO, vhost modules enabled)
+bin/compile_kernel.sh
+
+# Phase 4 -- GRUB EFI bootloader
+bin/02_compile_grub_efi.sh
+
+# Phase 5 -- SmechVisor control plane (smechvisord + cloud-hypervisor)
+bin/13_install_smechvisor.sh
+
+# Phase 6 -- Bootable SmechVisor ISO
+bin/14_build_smechvisor_iso.sh

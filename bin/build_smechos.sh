@@ -1,5 +1,13 @@
 #!/bin/bash
 # SmechOS Sovereign Build Orchestrator
+#
+# Profiles (set via SMECHOS_PROFILE env var):
+#   smechos      (default) -- full KDE Plasma 6 desktop OS
+#   smechvisor             -- bare-metal hypervisor OS, OpenRC only
+#
+# Examples:
+#   bash bin/build_smechos.sh
+#   SMECHOS_PROFILE=smechvisor bash bin/build_smechos.sh
 set -e
 
 # Target mount point
@@ -8,12 +16,25 @@ TARGET_MOUNT="/mnt/smechos"
 # Auto-detect SmechDeploy directories
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-MANIFEST="$ROOT_DIR/build_order.txt"
 VENV_DIR="$ROOT_DIR/.venv"
 
+# Profile-aware manifest selection
+SMECHOS_PROFILE="${SMECHOS_PROFILE:-smechos}"
+case "$SMECHOS_PROFILE" in
+    smechvisor)
+        MANIFEST="$ROOT_DIR/build_order_smechvisor.txt"
+        TARGET_MOUNT="/mnt/smechvisor"
+        ;;
+    smechos|*)
+        MANIFEST="$ROOT_DIR/build_order.txt"
+        TARGET_MOUNT="/mnt/smechos"
+        ;;
+esac
+
 echo "--- Starting SmechOS Sovereign Build Sequence ---"
+echo "Profile:              $SMECHOS_PROFILE"
 echo "Targeting mount point: $TARGET_MOUNT"
-echo "Manifest file: $MANIFEST"
+echo "Manifest file:         $MANIFEST"
 
 # Ensure Python Virtual Environment is ready
 if [ ! -d "$VENV_DIR" ]; then
