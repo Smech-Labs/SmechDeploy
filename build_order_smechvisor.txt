@@ -26,8 +26,6 @@ bin/02_compile_grub_efi.sh
 # Phase 5 -- SmechVisor control plane (smechvisord + cloud-hypervisor)
 bin/13_install_smechvisor.sh
 
-# Phase 6 -- Bootable SmechVisor live ISO (boots directly into OS, no installer)
-bin/14_build_smechvisor_iso.sh
-
-# Phase 7 -- SmechVisor install ISO (offline TUI installer, bundles all packages)
+# Phase 6 -- SmechVisor install ISO (offline TUI installer, bundles all packages)
+# No live ISO -- SmechVisor is an install-only hypervisor OS, same as Proxmox.
 bin/15_build_smechvisor_install_iso.sh
