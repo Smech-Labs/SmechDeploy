@@ -37,6 +37,16 @@ INSTALLER_BIN="$INSTALLER_SRC/target/release/smechvisor-installer"
 CH_VERSION="${CH_VERSION:-42.0}"
 CH_URL="https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v${CH_VERSION}/cloud-hypervisor-static"
 
+# GRUB tools -- prefer host PATH, fall back to tools compiled inside SMECH_TARGET
+GRUB_MKIMAGE="${GRUB_MKIMAGE:-}"
+GRUB_MKRESCUE="${GRUB_MKRESCUE:-}"
+for candidate in grub-mkimage "$SMECH_TARGET/usr/bin/grub-mkimage"; do
+    command -v "$candidate" &>/dev/null && GRUB_MKIMAGE="$candidate" && break
+done
+for candidate in grub-mkrescue "$SMECH_TARGET/usr/bin/grub-mkrescue"; do
+    command -v "$candidate" &>/dev/null && GRUB_MKRESCUE="$candidate" && break
+done
+
 echo "[smechvisor-install-iso] Building SmechVisor install ISO..."
 echo "[smechvisor-install-iso] Source target: $SMECH_TARGET"
 echo "[smechvisor-install-iso] Output: $ISO_PATH"
@@ -91,15 +101,21 @@ mkdir -p \
     "$DAEMON_STAGE/var/lib/smechvisord/vms" \
     "$DAEMON_STAGE/var/log/smechvisord"
 
-# smechvisord binary -- prefer pre-installed in SMECH_TARGET, else build fresh
-if [ -f "$SMECH_TARGET/usr/sbin/smechvisord" ]; then
-    cp "$SMECH_TARGET/usr/sbin/smechvisord" "$DAEMON_STAGE/usr/sbin/smechvisord"
-elif [ -d "/tmp/smechos_build/smechvisord" ]; then
-    cp "/tmp/smechos_build/smechvisord/daemon/target/release/smechvisord" \
-       "$DAEMON_STAGE/usr/sbin/smechvisord"
+# smechvisord binary -- check SMECH_TARGET, build cache, then local smechvisord repo
+SMECHVISORD_BIN=""
+for candidate in \
+    "$SMECH_TARGET/usr/sbin/smechvisord" \
+    "/tmp/smechos_build/smechvisord/daemon/target/release/smechvisord" \
+    "$DEPLOY_ROOT/../smechvisord/daemon/target/release/smechvisord" \
+    "$HOME/smechvisord/daemon/target/release/smechvisord"; do
+    [ -f "$candidate" ] && SMECHVISORD_BIN="$candidate" && break
+done
+if [ -n "$SMECHVISORD_BIN" ]; then
+    cp "$SMECHVISORD_BIN" "$DAEMON_STAGE/usr/sbin/smechvisord"
+    chmod 755 "$DAEMON_STAGE/usr/sbin/smechvisord"
 else
     echo "[smechvisor-install-iso] Warning: smechvisord binary not found."
-    echo "  Run 13_install_smechvisor.sh first."
+    echo "  Run 13_install_smechvisor.sh or cargo build --release in smechvisord/daemon/ first."
 fi
 
 # web assets
@@ -175,26 +191,52 @@ menuentry "Install SmechVisor (debug console)" {
 GRUBCFG
 
 # ── Build ISO ─────────────────────────────────────────────────────────────────
-echo "[smechvisor-install-iso] Building ISO with grub-mkrescue..."
-grub-mkrescue \
-    --output="$ISO_PATH" \
-    "$WORK_DIR" \
-    -- -volid "SMECHVISOR_INST" 2>/dev/null \
-|| {
-    echo "[smechvisor-install-iso] grub-mkrescue not found -- falling back to xorriso..."
+echo "[smechvisor-install-iso] Building ISO (grub-mkrescue: ${GRUB_MKRESCUE:-not found})..."
+
+GRUB_LIB_DIR="$SMECH_TARGET/usr/lib/grub"
+
+if [ -n "$GRUB_MKRESCUE" ]; then
+    "$GRUB_MKRESCUE" \
+        --directory="$GRUB_LIB_DIR/x86_64-efi" \
+        --directory="$GRUB_LIB_DIR/i386-pc" \
+        --output="$ISO_PATH" \
+        "$WORK_DIR" \
+        -- -volid "SMECHVISOR_INST"
+else
+    echo "[smechvisor-install-iso] grub-mkrescue not found -- building with grub-mkimage + xorriso..."
 
     EFI_DIR="$WORK_DIR/EFI/BOOT"
     mkdir -p "$EFI_DIR"
-    grub-mkstandalone \
+
+    # Build EFI bootloader image
+    "$GRUB_MKIMAGE" \
         -O x86_64-efi \
+        -p "/boot/grub" \
+        -d "$GRUB_LIB_DIR/x86_64-efi" \
         -o "$EFI_DIR/BOOTX64.EFI" \
-        "boot/grub/grub.cfg=$BOOT_DIR/grub.cfg"
+        fat iso9660 part_gpt part_msdos normal boot linux configfile \
+        loopback chain efifwsetup efi_gop efi_uga ls search \
+        search_label search_fs_uuid search_fs_file gfxterm gfxterm_background \
+        test all_video loadenv exfat ext2
+
+    # Build BIOS core image
+    "$GRUB_MKIMAGE" \
+        -O i386-pc \
+        -p "/boot/grub" \
+        -d "$GRUB_LIB_DIR/i386-pc" \
+        -o "$WORK_DIR/boot/grub/core.img" \
+        biosdisk iso9660 normal linux echo configfile search search_label \
+        search_fs_uuid part_gpt part_msdos ls test loadenv
+
+    cat "$GRUB_LIB_DIR/i386-pc/cdboot.img" \
+        "$WORK_DIR/boot/grub/core.img" \
+        > "$WORK_DIR/boot/grub/bios.img"
 
     xorriso -as mkisofs \
         -iso-level 3 \
         -full-iso9660-filenames \
         -volid "SMECHVISOR_INST" \
-        -eltorito-boot boot/grub/core.img \
+        -eltorito-boot boot/grub/bios.img \
         -eltorito-catalog boot/grub/boot.cat \
         -no-emul-boot \
         -boot-load-size 4 \
@@ -204,7 +246,7 @@ grub-mkrescue \
         --efi-boot-image \
         -o "$ISO_PATH" \
         "$WORK_DIR"
-}
+fi
 
 echo ""
 echo "[smechvisor-install-iso] ISO COMPLETE: $ISO_PATH"
