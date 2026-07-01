@@ -29,3 +29,6 @@ bin/13_install_smechvisor.sh
 # Phase 6 -- SmechVisor install ISO (offline TUI installer, bundles all packages)
 # No live ISO -- SmechVisor is an install-only hypervisor OS, same as Proxmox.
 bin/15_build_smechvisor_install_iso.sh
+
+# Phase 7 -- Deploy Shim ISO (tiny network-receive ISO for remote deployment)
+bin/16_build_smechvisor_deploy_shim.sh
