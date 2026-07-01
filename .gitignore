@@ -1,6 +1,8 @@
 # build outputs / Rust targets
 /repo-packs/target
 /repo-packs-installer/target
+/repo-packs-installer-visor/target
+/repo-packs-spkvisor/target
 
 # large vendored source trees and binary images -- not tracked in git
 /images/
