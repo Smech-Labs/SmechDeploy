@@ -3,6 +3,7 @@
 /repo-packs-installer/target
 /repo-packs-installer-visor/target
 /repo-packs-spkvisor/target
+/repo-packs-smechvisor-shim/target
 
 # large vendored source trees and binary images -- not tracked in git
 /images/

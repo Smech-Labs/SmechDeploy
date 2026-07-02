@@ -1,0 +1,11 @@
+[package]
+name = "smechvisor-shim"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "smechvisor-shim"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"

@@ -30,8 +30,8 @@ ISO_PATH="$OUTPUT_DIR/$ISO_NAME"
 WORK_DIR="/tmp/smechos_build/smechvisor_shim_iso"
 BOOT_DIR="$WORK_DIR/boot/grub"
 
-SPKVISOR_SRC="$DEPLOY_ROOT/repo-packs-spkvisor"
-SPKVISOR_BIN="$SPKVISOR_SRC/target/release/spk-visor"
+SHIM_SRC="$DEPLOY_ROOT/repo-packs-smechvisor-shim"
+SHIM_BIN="$SHIM_SRC/target/release/smechvisor-shim"
 
 GRUB_MKRESCUE=""
 for c in grub-mkrescue "$SMECH_TARGET/usr/bin/grub-mkrescue"; do
@@ -49,13 +49,13 @@ echo "[smechvisor-shim] Output: $ISO_PATH"
 mkdir -p "$OUTPUT_DIR" "$BOOT_DIR" "$WORK_DIR/shim"
 rm -f "$ISO_PATH"
 
-# ── Build spk-visor ────────────────────────────────────────────────────────────
-echo "[smechvisor-shim] Building spk-visor (Rust)..."
-cd "$SPKVISOR_SRC"
+# ── Build smechvisor-shim ──────────────────────────────────────────────────────
+echo "[smechvisor-shim] Building smechvisor-shim TUI binary (Rust)..."
+cd "$SHIM_SRC"
 cargo build --release
 cd "$DEPLOY_ROOT"
-cp "$SPKVISOR_BIN" "$WORK_DIR/shim/spk-visor"
-chmod 755 "$WORK_DIR/shim/spk-visor"
+cp "$SHIM_BIN" "$WORK_DIR/shim/smechvisor-shim"
+chmod 755 "$WORK_DIR/shim/smechvisor-shim"
 
 # ── Copy kernel and initramfs ──────────────────────────────────────────────────
 echo "[smechvisor-shim] Copying kernel and initramfs..."
@@ -77,38 +77,23 @@ set default=0
 
 menuentry "SmechVisor Deploy Shim" {
     linux   /boot/vmlinuz quiet loglevel=3 \
-            init=/shim/spk-visor-init
+            init=/shim/smechvisor-shim-init
     initrd  /boot/initramfs.img
 }
 GRUBCFG
 
-# The shim init wrapper: bring up networking then launch receive-deploy
-cat > "$WORK_DIR/shim/spk-visor-init" <<'INITSH'
+# The shim init wrapper: mount essentials then launch the TUI wizard
+cat > "$WORK_DIR/shim/smechvisor-shim-init" <<'INITSH'
 #!/bin/sh
 # Minimal init for the deploy shim
-# Mount essential filesystems
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
-
-# Bring up all network interfaces via DHCP
-for iface in $(ls /sys/class/net/ | grep -v lo); do
-    ip link set "$iface" up
-    dhcpcd -t 15 "$iface" &
-done
-wait
-
-# Write DNS
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
-echo "nameserver 1.1.1.1" >> /etc/resolv.conf
-
-# Create install target mountpoint
-mkdir -p /mnt/target
-
-# Launch spk-visor receive-deploy -- this displays the code and waits
-exec /shim/spk-visor receive-deploy
+mkdir -p /mnt/target /var/run /tmp /etc
+echo "nameserver 1.1.1.1" > /etc/resolv.conf
+exec /shim/smechvisor-shim
 INITSH
-chmod 755 "$WORK_DIR/shim/spk-visor-init"
+chmod 755 "$WORK_DIR/shim/smechvisor-shim-init"
 
 # ── Build ISO ─────────────────────────────────────────────────────────────────
 echo "[smechvisor-shim] Building ISO (grub-mkrescue: ${GRUB_MKRESCUE:-not found})..."
